@@ -1,8 +1,7 @@
 import express from 'express';
 import cors from 'cors';
-import bcrypt from 'bcryptjs';
 import pool, { initDb } from './database.js';
-import { generateToken, authMiddleware, requireRole, AuthUser } from './auth.js';
+import { authMiddleware, requireRole, AuthUser } from './auth.js';
 
 const app = express();
 app.use(cors());
@@ -21,93 +20,11 @@ app.get('/health', async (_req, res) => {
   }
 });
 
-app.post('/api/login', async (req, res) => {
-  const { username, password } = req.body;
-  const { rows } = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
-  const user = rows[0];
-  if (!user || !bcrypt.compareSync(password, user.password)) {
-    res.status(401).json({ error: 'Неверный логин или пароль' });
-    return;
-  }
-  const token = generateToken({ userId: user.id, username: user.username, role: user.role });
-  res.json({ token, username: user.username, role: user.role, userId: user.id });
-});
-
 app.use('/api', authMiddleware);
 
 app.get('/api/me', (req, res) => {
   const u = getUser(req);
   res.json({ userId: u.userId, username: u.username, role: u.role });
-});
-
-// ===== USERS (admin only) =====
-
-app.get('/api/users', requireRole('admin'), async (_req, res) => {
-  const { rows } = await pool.query('SELECT id, username, role, created_at FROM users ORDER BY id');
-  res.json(rows);
-});
-
-app.post('/api/users', requireRole('admin'), async (req, res) => {
-  const { username, password, role } = req.body;
-  const validRoles = ['admin', 'applicant', 'reviewer'];
-  if (!username || !password) {
-    res.status(400).json({ error: 'Логин и пароль обязательны' });
-    return;
-  }
-  if (role && !validRoles.includes(role)) {
-    res.status(400).json({ error: 'Недопустимая роль' });
-    return;
-  }
-  const { rows: existing } = await pool.query('SELECT id FROM users WHERE username = $1', [username]);
-  if (existing.length > 0) {
-    res.status(400).json({ error: 'Пользователь с таким логином уже существует' });
-    return;
-  }
-  const hash = bcrypt.hashSync(password, 10);
-  const { rows } = await pool.query(
-    'INSERT INTO users (username, password, role) VALUES ($1, $2, $3) RETURNING id, username, role, created_at',
-    [username, hash, role || 'applicant']
-  );
-  res.status(201).json(rows[0]);
-});
-
-app.put('/api/users/:id', requireRole('admin'), async (req, res) => {
-  const { username, password, role } = req.body;
-  const validRoles = ['admin', 'applicant', 'reviewer'];
-  const { rows: existingRows } = await pool.query('SELECT * FROM users WHERE id = $1', [req.params.id]);
-  const existing = existingRows[0];
-  if (!existing) { res.status(404).json({ error: 'Пользователь не найден' }); return; }
-
-  if (role && !validRoles.includes(role)) {
-    res.status(400).json({ error: 'Недопустимая роль' });
-    return;
-  }
-
-  if (username && username !== existing.username) {
-    const { rows: dup } = await pool.query('SELECT id FROM users WHERE username = $1 AND id != $2', [username, req.params.id]);
-    if (dup.length > 0) { res.status(400).json({ error: 'Логин уже занят' }); return; }
-    await pool.query('UPDATE users SET username = $1 WHERE id = $2', [username, req.params.id]);
-  }
-  if (password) {
-    const hash = bcrypt.hashSync(password, 10);
-    await pool.query('UPDATE users SET password = $1 WHERE id = $2', [hash, req.params.id]);
-  }
-  if (role) {
-    await pool.query('UPDATE users SET role = $1 WHERE id = $2', [role, req.params.id]);
-  }
-
-  const { rows } = await pool.query('SELECT id, username, role, created_at FROM users WHERE id = $1', [req.params.id]);
-  res.json(rows[0]);
-});
-
-app.delete('/api/users/:id', requireRole('admin'), async (req, res) => {
-  const u = getUser(req);
-  if (Number(req.params.id) === u.userId) {
-    res.status(400).json({ error: 'Нельзя удалить самого себя' });
-    return;
-  }
-  await pool.query('DELETE FROM users WHERE id = $1', [req.params.id]);
-  res.json({ ok: true });
 });
 
 // ===== APPLICATIONS =====
@@ -121,9 +38,7 @@ app.get('/api/applications', async (req, res) => {
 
   if (u.role === 'admin') {
     const { rows } = await pool.query(`
-      SELECT a.*, u.username as owner_name FROM applications a
-      LEFT JOIN users u ON a.owner_id = u.id
-      ORDER BY a.updated_at DESC
+      SELECT * FROM applications ORDER BY updated_at DESC
     `);
     res.json(rows);
     return;
@@ -131,10 +46,7 @@ app.get('/api/applications', async (req, res) => {
 
   if (u.role === 'applicant') {
     const { rows } = await pool.query(`
-      SELECT a.*, u.username as owner_name FROM applications a
-      LEFT JOIN users u ON a.owner_id = u.id
-      WHERE a.owner_id = $1
-      ORDER BY a.updated_at DESC
+      SELECT * FROM applications WHERE owner_id = $1 ORDER BY updated_at DESC
     `, [u.userId]);
     res.json(rows);
     return;
@@ -142,10 +54,7 @@ app.get('/api/applications', async (req, res) => {
 
   if (u.role === 'reviewer') {
     const { rows } = await pool.query(`
-      SELECT a.*, u.username as owner_name FROM applications a
-      LEFT JOIN users u ON a.owner_id = u.id
-      WHERE a.status != 'Подготовка'
-      ORDER BY a.updated_at DESC
+      SELECT * FROM applications WHERE status != 'Подготовка' ORDER BY updated_at DESC
     `);
     res.json(rows);
     return;
@@ -158,8 +67,8 @@ app.post('/api/applications', requireRole('admin', 'applicant'), async (req, res
   const u = getUser(req);
   const number = generateNumber();
   const { rows } = await pool.query(
-    'INSERT INTO applications (number, owner_id) VALUES ($1, $2) RETURNING *',
-    [number, u.userId]
+    'INSERT INTO applications (number, owner_id, owner_name) VALUES ($1, $2, $3) RETURNING *',
+    [number, u.userId, u.username]
   );
   res.status(201).json(rows[0]);
 });

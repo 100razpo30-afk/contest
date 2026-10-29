@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../api';
+import keycloak from '../keycloak';
 import { Application, Role, roleLabels } from '../types';
 
 const statusColors: Record<string, string> = {
@@ -11,12 +12,19 @@ const statusColors: Record<string, string> = {
   'Победитель': '#5cb85c',
 };
 
+function getRole(): Role {
+  const roles: string[] = keycloak.tokenParsed?.resource_access?.contest?.roles || [];
+  if (roles.includes('admin')) return 'admin';
+  if (roles.includes('reviewer')) return 'reviewer';
+  return 'applicant';
+}
+
 export default function ApplicationsPage() {
   const [apps, setApps] = useState<Application[]>([]);
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
-  const username = localStorage.getItem('username') || '';
-  const role = (localStorage.getItem('role') || 'applicant') as Role;
+  const username = keycloak.tokenParsed?.preferred_username || '';
+  const role = getRole();
 
   const loadApps = async () => {
     try {
@@ -35,8 +43,7 @@ export default function ApplicationsPage() {
   };
 
   const handleLogout = () => {
-    localStorage.clear();
-    navigate('/login');
+    keycloak.logout({ redirectUri: window.location.origin });
   };
 
   const formatDate = (d: string) => {

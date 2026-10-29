@@ -2,7 +2,7 @@ export interface Application {
   id: number;
   number: string;
   status: string;
-  owner_id: number;
+  owner_id: string;
   owner_name?: string;
   email: string;
   phone: string;
@@ -20,20 +20,6 @@ export interface Application {
 }
 
 export type Role = 'admin' | 'applicant' | 'reviewer';
-
-export interface User {
-  id: number;
-  username: string;
-  role: Role;
-  created_at: string;
-}
-
-export interface AuthData {
-  token: string;
-  username: string;
-  role: Role;
-  userId: number;
-}
 
 export const roleLabels: Record<Role, string> = {
   admin: 'Администратор',

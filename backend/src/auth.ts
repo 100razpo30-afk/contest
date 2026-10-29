@@ -1,29 +1,49 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'contest-secret-key-change-in-production';
+const KEYCLOAK_URL = process.env.KEYCLOAK_URL || 'http://keycloak.kontent.svc.cluster.local:8080';
+const KEYCLOAK_REALM = process.env.KEYCLOAK_REALM || 'kontent';
+const KEYCLOAK_CLIENT_ID = process.env.KEYCLOAK_CLIENT_ID || 'contest';
+
+let cachedPublicKey: string | null = null;
 
 export interface AuthUser {
-  userId: number;
+  userId: string;
   username: string;
   role: string;
 }
 
-export function generateToken(user: AuthUser): string {
-  return jwt.sign(user, JWT_SECRET, { expiresIn: '24h' });
+async function getPublicKey(): Promise<string> {
+  if (cachedPublicKey) return cachedPublicKey;
+  const res = await fetch(`${KEYCLOAK_URL}/realms/${KEYCLOAK_REALM}`);
+  const data = await res.json() as any;
+  cachedPublicKey = `-----BEGIN PUBLIC KEY-----\n${data.public_key}\n-----END PUBLIC KEY-----`;
+  return cachedPublicKey;
 }
 
-export function authMiddleware(req: Request, res: Response, next: NextFunction): void {
+export async function authMiddleware(req: Request, res: Response, next: NextFunction): Promise<void> {
   const header = req.headers.authorization;
   if (!header?.startsWith('Bearer ')) {
     res.status(401).json({ error: 'Не авторизован' });
     return;
   }
   try {
-    const decoded = jwt.verify(header.slice(7), JWT_SECRET) as AuthUser;
-    (req as any).user = decoded;
+    const publicKey = await getPublicKey();
+    const decoded = jwt.verify(header.slice(7), publicKey, { algorithms: ['RS256'] }) as any;
+
+    const clientRoles: string[] = decoded.resource_access?.[KEYCLOAK_CLIENT_ID]?.roles || [];
+    const role = clientRoles.includes('admin') ? 'admin'
+      : clientRoles.includes('reviewer') ? 'reviewer'
+      : 'applicant';
+
+    (req as any).user = {
+      userId: decoded.sub,
+      username: decoded.preferred_username,
+      role,
+    } as AuthUser;
     next();
   } catch {
+    cachedPublicKey = null;
     res.status(401).json({ error: 'Невалидный токен' });
   }
 }

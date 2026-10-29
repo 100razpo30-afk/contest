@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: contest-api
+  namespace: contest
+  labels:
+    app.kubernetes.io/name: &name contest-api
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: *name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: *name
+    spec:
+      containers:
+      - name: api
+        image: ghcr.io/100razpo30-afk/contest/contest-api:latest
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        ports:
+        - containerPort: 3000
+        env:
+          - name: DB_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: postgre-secret
+                key: DB_PASSWORD
+          - name: DB_HOST
+            valueFrom:
+              configMapKeyRef:
+                name: contest-config
+                key: DB_HOST
+          - name: DB_PORT
+            valueFrom:
+              configMapKeyRef:
+                name: contest-config
+                key: DB_PORT     
+          - name: DB_USER
+            valueFrom:
+              configMapKeyRef:
+                name: contest-config
+                key: DB_USER         
+          - name: DB_NAME
+            valueFrom:
+              configMapKeyRef:
+                name: contest-config
+                key: DB_NAME  
+      imagePullSecrets:
+      - name: ghcr-secret
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: contest
+spec:
+  selector:
+    app.kubernetes.io/name: contest-api
+  ports:
+  - port: 3000
+    targetPort: 3000
+

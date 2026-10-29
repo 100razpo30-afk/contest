@@ -1,6 +1,7 @@
 import { useEffect, useState, ChangeEvent } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import api from '../api';
+import keycloak from '../keycloak';
 import { Application, Role } from '../types';
 
 const statusColors: Record<string, string> = {
@@ -21,8 +22,11 @@ export default function ApplicationDetailPage() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
-  const role = (localStorage.getItem('role') || 'applicant') as Role;
-  const userId = Number(localStorage.getItem('userId'));
+  const clientRoles: string[] = keycloak.tokenParsed?.resource_access?.contest?.roles || [];
+  const role: Role = clientRoles.includes('admin') ? 'admin'
+    : clientRoles.includes('reviewer') ? 'reviewer'
+    : 'applicant';
+  const userId = keycloak.tokenParsed?.sub || '';
 
   const load = async () => {
     try {
