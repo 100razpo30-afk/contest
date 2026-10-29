@@ -12,6 +12,10 @@ function getUser(req: express.Request): AuthUser {
   return (req as any).user;
 }
 
+app.get('/health', (_req, res) => {
+  res.json({ status: 'ok' });
+});
+
 app.post('/api/login', (req, res) => {
   const { username, password } = req.body;
   const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username) as any;
@@ -254,7 +258,7 @@ app.delete('/api/applications/:id', requireRole('admin'), (req, res) => {
   res.json({ ok: true });
 });
 
-const PORT = 3001;
+const PORT = 3000;
 app.listen(PORT, () => {
   console.log(`Backend running on http://localhost:${PORT}`);
 });
