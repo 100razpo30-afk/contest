@@ -14,7 +14,7 @@ spec:
     secretName: contest-tls-secret
   ingressClassName: nginx
   rules:
-  - host: contest.local
+  - host: local.contest
     http:
       paths:
       - pathType: Prefix
