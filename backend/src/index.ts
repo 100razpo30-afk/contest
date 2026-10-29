@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import bcrypt from 'bcryptjs';
-import db from './database.js';
+import pool, { initDb } from './database.js';
 import { generateToken, authMiddleware, requireRole, AuthUser } from './auth.js';
 
 const app = express();
@@ -12,13 +12,19 @@ function getUser(req: express.Request): AuthUser {
   return (req as any).user;
 }
 
-app.get('/health', (_req, res) => {
-  res.json({ status: 'ok' });
+app.get('/health', async (_req, res) => {
+  try {
+    await pool.query('SELECT 1');
+    res.json({ status: 'ok' });
+  } catch {
+    res.status(503).json({ status: 'db unavailable' });
+  }
 });
 
-app.post('/api/login', (req, res) => {
+app.post('/api/login', async (req, res) => {
   const { username, password } = req.body;
-  const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username) as any;
+  const { rows } = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
+  const user = rows[0];
   if (!user || !bcrypt.compareSync(password, user.password)) {
     res.status(401).json({ error: 'Неверный логин или пароль' });
     return;
@@ -36,12 +42,12 @@ app.get('/api/me', (req, res) => {
 
 // ===== USERS (admin only) =====
 
-app.get('/api/users', requireRole('admin'), (_req, res) => {
-  const rows = db.prepare('SELECT id, username, role, created_at FROM users ORDER BY id').all();
+app.get('/api/users', requireRole('admin'), async (_req, res) => {
+  const { rows } = await pool.query('SELECT id, username, role, created_at FROM users ORDER BY id');
   res.json(rows);
 });
 
-app.post('/api/users', requireRole('admin'), (req, res) => {
+app.post('/api/users', requireRole('admin'), async (req, res) => {
   const { username, password, role } = req.body;
   const validRoles = ['admin', 'applicant', 'reviewer'];
   if (!username || !password) {
@@ -52,21 +58,24 @@ app.post('/api/users', requireRole('admin'), (req, res) => {
     res.status(400).json({ error: 'Недопустимая роль' });
     return;
   }
-  const exists = db.prepare('SELECT id FROM users WHERE username = ?').get(username);
-  if (exists) {
+  const { rows: existing } = await pool.query('SELECT id FROM users WHERE username = $1', [username]);
+  if (existing.length > 0) {
     res.status(400).json({ error: 'Пользователь с таким логином уже существует' });
     return;
   }
   const hash = bcrypt.hashSync(password, 10);
-  const result = db.prepare('INSERT INTO users (username, password, role) VALUES (?, ?, ?)').run(username, hash, role || 'applicant');
-  const created = db.prepare('SELECT id, username, role, created_at FROM users WHERE id = ?').get(result.lastInsertRowid);
-  res.status(201).json(created);
+  const { rows } = await pool.query(
+    'INSERT INTO users (username, password, role) VALUES ($1, $2, $3) RETURNING id, username, role, created_at',
+    [username, hash, role || 'applicant']
+  );
+  res.status(201).json(rows[0]);
 });
 
-app.put('/api/users/:id', requireRole('admin'), (req, res) => {
+app.put('/api/users/:id', requireRole('admin'), async (req, res) => {
   const { username, password, role } = req.body;
   const validRoles = ['admin', 'applicant', 'reviewer'];
-  const existing = db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id) as any;
+  const { rows: existingRows } = await pool.query('SELECT * FROM users WHERE id = $1', [req.params.id]);
+  const existing = existingRows[0];
   if (!existing) { res.status(404).json({ error: 'Пользователь не найден' }); return; }
 
   if (role && !validRoles.includes(role)) {
@@ -75,29 +84,29 @@ app.put('/api/users/:id', requireRole('admin'), (req, res) => {
   }
 
   if (username && username !== existing.username) {
-    const dup = db.prepare('SELECT id FROM users WHERE username = ? AND id != ?').get(username, req.params.id);
-    if (dup) { res.status(400).json({ error: 'Логин уже занят' }); return; }
-    db.prepare('UPDATE users SET username = ? WHERE id = ?').run(username, req.params.id);
+    const { rows: dup } = await pool.query('SELECT id FROM users WHERE username = $1 AND id != $2', [username, req.params.id]);
+    if (dup.length > 0) { res.status(400).json({ error: 'Логин уже занят' }); return; }
+    await pool.query('UPDATE users SET username = $1 WHERE id = $2', [username, req.params.id]);
   }
   if (password) {
     const hash = bcrypt.hashSync(password, 10);
-    db.prepare('UPDATE users SET password = ? WHERE id = ?').run(hash, req.params.id);
+    await pool.query('UPDATE users SET password = $1 WHERE id = $2', [hash, req.params.id]);
   }
   if (role) {
-    db.prepare('UPDATE users SET role = ? WHERE id = ?').run(role, req.params.id);
+    await pool.query('UPDATE users SET role = $1 WHERE id = $2', [role, req.params.id]);
   }
 
-  const updated = db.prepare('SELECT id, username, role, created_at FROM users WHERE id = ?').get(req.params.id);
-  res.json(updated);
+  const { rows } = await pool.query('SELECT id, username, role, created_at FROM users WHERE id = $1', [req.params.id]);
+  res.json(rows[0]);
 });
 
-app.delete('/api/users/:id', requireRole('admin'), (req, res) => {
+app.delete('/api/users/:id', requireRole('admin'), async (req, res) => {
   const u = getUser(req);
   if (Number(req.params.id) === u.userId) {
     res.status(400).json({ error: 'Нельзя удалить самого себя' });
     return;
   }
-  db.prepare('DELETE FROM users WHERE id = ?').run(req.params.id);
+  await pool.query('DELETE FROM users WHERE id = $1', [req.params.id]);
   res.json({ ok: true });
 });
 
@@ -107,37 +116,37 @@ function generateNumber(): string {
   return String(Math.floor(100000 + Math.random() * 900000));
 }
 
-app.get('/api/applications', (req, res) => {
+app.get('/api/applications', async (req, res) => {
   const u = getUser(req);
 
   if (u.role === 'admin') {
-    const rows = db.prepare(`
+    const { rows } = await pool.query(`
       SELECT a.*, u.username as owner_name FROM applications a
       LEFT JOIN users u ON a.owner_id = u.id
       ORDER BY a.updated_at DESC
-    `).all();
+    `);
     res.json(rows);
     return;
   }
 
   if (u.role === 'applicant') {
-    const rows = db.prepare(`
+    const { rows } = await pool.query(`
       SELECT a.*, u.username as owner_name FROM applications a
       LEFT JOIN users u ON a.owner_id = u.id
-      WHERE a.owner_id = ?
+      WHERE a.owner_id = $1
       ORDER BY a.updated_at DESC
-    `).all(u.userId);
+    `, [u.userId]);
     res.json(rows);
     return;
   }
 
   if (u.role === 'reviewer') {
-    const rows = db.prepare(`
+    const { rows } = await pool.query(`
       SELECT a.*, u.username as owner_name FROM applications a
       LEFT JOIN users u ON a.owner_id = u.id
       WHERE a.status != 'Подготовка'
       ORDER BY a.updated_at DESC
-    `).all();
+    `);
     res.json(rows);
     return;
   }
@@ -145,17 +154,20 @@ app.get('/api/applications', (req, res) => {
   res.json([]);
 });
 
-app.post('/api/applications', requireRole('admin', 'applicant'), (req, res) => {
+app.post('/api/applications', requireRole('admin', 'applicant'), async (req, res) => {
   const u = getUser(req);
   const number = generateNumber();
-  const result = db.prepare('INSERT INTO applications (number, owner_id) VALUES (?, ?)').run(number, u.userId);
-  const row = db.prepare('SELECT * FROM applications WHERE id = ?').get(result.lastInsertRowid);
-  res.status(201).json(row);
+  const { rows } = await pool.query(
+    'INSERT INTO applications (number, owner_id) VALUES ($1, $2) RETURNING *',
+    [number, u.userId]
+  );
+  res.status(201).json(rows[0]);
 });
 
-app.get('/api/applications/:id', (req, res) => {
+app.get('/api/applications/:id', async (req, res) => {
   const u = getUser(req);
-  const row = db.prepare('SELECT * FROM applications WHERE id = ?').get(req.params.id) as any;
+  const { rows } = await pool.query('SELECT * FROM applications WHERE id = $1', [req.params.id]);
+  const row = rows[0];
   if (!row) { res.status(404).json({ error: 'Заявка не найдена' }); return; }
 
   if (u.role === 'applicant' && row.owner_id !== u.userId) {
@@ -170,9 +182,10 @@ app.get('/api/applications/:id', (req, res) => {
   res.json(row);
 });
 
-app.put('/api/applications/:id', (req, res) => {
+app.put('/api/applications/:id', async (req, res) => {
   const u = getUser(req);
-  const existing = db.prepare('SELECT * FROM applications WHERE id = ?').get(req.params.id) as any;
+  const { rows: existingRows } = await pool.query('SELECT * FROM applications WHERE id = $1', [req.params.id]);
+  const existing = existingRows[0];
   if (!existing) { res.status(404).json({ error: 'Заявка не найдена' }); return; }
 
   if (u.role === 'applicant') {
@@ -191,26 +204,28 @@ app.put('/api/applications/:id', (req, res) => {
 
   const updates: string[] = [];
   const values: any[] = [];
+  let paramIndex = 1;
   for (const f of fields) {
     if (req.body[f] !== undefined) {
-      updates.push(`${f} = ?`);
+      updates.push(`${f} = $${paramIndex++}`);
       values.push(req.body[f]);
     }
   }
 
   if (updates.length > 0) {
-    updates.push("updated_at = datetime('now')");
+    updates.push('updated_at = NOW()');
     values.push(req.params.id);
-    db.prepare(`UPDATE applications SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+    await pool.query(`UPDATE applications SET ${updates.join(', ')} WHERE id = $${paramIndex}`, values);
   }
 
-  const updated = db.prepare('SELECT * FROM applications WHERE id = ?').get(req.params.id);
-  res.json(updated);
+  const { rows } = await pool.query('SELECT * FROM applications WHERE id = $1', [req.params.id]);
+  res.json(rows[0]);
 });
 
-app.post('/api/applications/:id/submit', (req, res) => {
+app.post('/api/applications/:id/submit', async (req, res) => {
   const u = getUser(req);
-  const row = db.prepare('SELECT * FROM applications WHERE id = ?').get(req.params.id) as any;
+  const { rows } = await pool.query('SELECT * FROM applications WHERE id = $1', [req.params.id]);
+  const row = rows[0];
   if (!row) { res.status(404).json({ error: 'Заявка не найдена' }); return; }
 
   if (u.role === 'applicant' && row.owner_id !== u.userId) {
@@ -226,12 +241,12 @@ app.post('/api/applications/:id/submit', (req, res) => {
     return;
   }
 
-  db.prepare("UPDATE applications SET status = 'Подана', updated_at = datetime('now') WHERE id = ?").run(req.params.id);
-  const updated = db.prepare('SELECT * FROM applications WHERE id = ?').get(req.params.id);
-  res.json(updated);
+  await pool.query("UPDATE applications SET status = 'Подана', updated_at = NOW() WHERE id = $1", [req.params.id]);
+  const { rows: updated } = await pool.query('SELECT * FROM applications WHERE id = $1', [req.params.id]);
+  res.json(updated[0]);
 });
 
-app.post('/api/applications/:id/status', (req, res) => {
+app.post('/api/applications/:id/status', async (req, res) => {
   const u = getUser(req);
   const { status } = req.body;
   const allowed = ['Подготовка', 'Подана', 'На рассмотрении', 'Отклонена', 'Победитель'];
@@ -245,20 +260,23 @@ app.post('/api/applications/:id/status', (req, res) => {
     return;
   }
 
-  const row = db.prepare('SELECT * FROM applications WHERE id = ?').get(req.params.id) as any;
-  if (!row) { res.status(404).json({ error: 'Заявка не найдена' }); return; }
+  const { rows } = await pool.query('SELECT * FROM applications WHERE id = $1', [req.params.id]);
+  if (rows.length === 0) { res.status(404).json({ error: 'Заявка не найдена' }); return; }
 
-  db.prepare("UPDATE applications SET status = ?, updated_at = datetime('now') WHERE id = ?").run(status, req.params.id);
-  const updated = db.prepare('SELECT * FROM applications WHERE id = ?').get(req.params.id);
-  res.json(updated);
+  await pool.query('UPDATE applications SET status = $1, updated_at = NOW() WHERE id = $2', [status, req.params.id]);
+  const { rows: updated } = await pool.query('SELECT * FROM applications WHERE id = $1', [req.params.id]);
+  res.json(updated[0]);
 });
 
-app.delete('/api/applications/:id', requireRole('admin'), (req, res) => {
-  db.prepare('DELETE FROM applications WHERE id = ?').run(req.params.id);
+app.delete('/api/applications/:id', requireRole('admin'), async (req, res) => {
+  await pool.query('DELETE FROM applications WHERE id = $1', [req.params.id]);
   res.json({ ok: true });
 });
 
 const PORT = 3000;
-app.listen(PORT, () => {
-  console.log(`Backend running on http://localhost:${PORT}`);
+
+initDb().then(() => {
+  app.listen(PORT, () => {
+    console.log(`Backend running on http://localhost:${PORT}`);
+  });
 });
