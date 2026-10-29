@@ -57,7 +57,22 @@ spec:
             valueFrom:
               configMapKeyRef:
                 name: contest-config
-                key: DB_NAME  
+                key: DB_NAME
+          - name: KEYCLOAK_URL
+            valueFrom:
+              configMapKeyRef:
+                name: contest-config
+                key: KEYCLOAK_URL
+          - name: KEYCLOAK_REALM
+            valueFrom:
+              configMapKeyRef:
+                name: contest-config
+                key: KEYCLOAK_REALM
+          - name: KEYCLOAK_CLIENT_ID
+            valueFrom:
+              configMapKeyRef:
+                name: contest-config
+                key: KEYCLOAK_CLIENT_ID
       imagePullSecrets:
       - name: ghcr-secret
 

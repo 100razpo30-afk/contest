@@ -10,4 +10,7 @@ data:
   DB_PORT: "5432"
   DB_USER: "admin"
   DB_NAME: "contest"
+  KEYCLOAK_URL: "http://keycloak.kontent.svc.cluster.local:8080"
+  KEYCLOAK_REALM: "kontent"
+  KEYCLOAK_CLIENT_ID: "contest"
 
