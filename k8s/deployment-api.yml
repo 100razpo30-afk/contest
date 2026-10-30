@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
       - name: api
-        image: ghcr.io/100razpo30-afk/contest/contest-api:latest
+        image: ghcr.io/100razpo30-afk/contest/contest-api:bbd5aa0679626e1e36255f42bd99945b86799bf0
         resources:
           requests:
             cpu: 100m

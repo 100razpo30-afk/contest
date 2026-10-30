@@ -8,9 +8,6 @@ spec:
     - name: local-gateway
       namespace: gateway-system
       sectionName: https
-    - name: local-gateway
-      namespace: gateway-system
-      sectionName: legacy-https
   hostnames:
     - contest.local.lan
   rules:
