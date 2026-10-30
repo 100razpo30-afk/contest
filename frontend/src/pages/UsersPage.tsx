@@ -19,7 +19,7 @@ export default function UsersPage() {
   };
 
   const openKeycloak = () => {
-    window.open('https://keycloak.local:30443/admin/kontent/console/#/kontent/users', '_blank');
+    window.open('https://keycloak.local.lan:30443/admin/kontent/console/#/kontent/users', '_blank');
   };
 
   return (
